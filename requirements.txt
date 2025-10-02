@@ -1,5 +1,5 @@
 pip>=25.2
-openai==0.28
+openai>=1.104.2
 python-dotenv
 pinecone
 langchain_openai
