@@ -5,4 +5,5 @@ pinecone
 langchain_openai
 langchain
 langchain-community
+langchain-pinecone
 lark
