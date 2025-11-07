@@ -4,15 +4,8 @@ from dotenv import load_dotenv
 from typing import List, Dict, Any
 # OpenAI (raw SDK for embeddings + streaming chat)
 from openai import OpenAI as OpenAIClient
-# LangChain OpenAI (for LC chat model + embeddings)
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-# Pinecone low-level + LC vectorstore wrapper
+# Pinecone
 from pinecone import Pinecone
-from langchain_pinecone import PineconeVectorStore
-# Self-Query retriever bits
-from langchain.chains.query_constructor.base import AttributeInfo
-from langchain.retrievers.self_query.base import SelfQueryRetriever
-from langchain_community.query_constructors.pinecone import PineconeTranslator
 
 
 # ---------- Env & Clients ----------
@@ -52,76 +45,8 @@ app = App()
 # ---------- Init Services ----------
 
 def init_services(app):
-    # Embeddings for both LC vectorstore & manual dense calls
-    app.embeddings = OpenAIEmbeddings(
-        model="text-embedding-3-large",
-        openai_api_key=OPEN_AI_API,
-    )
-
-    # LC VectorStore over the same Pinecone index
-    app.vectorstore = PineconeVectorStore(
-        embedding=app.embeddings,
-        index_name=PINECONE_INDEX_NAME,
-        pinecone_api_key=PINECONE_API_KEY,
-        text_key="answer"  # <- your content lives in `metadata.answer`; VectorStore will read from this key
-    )
-
-    # LLM for SelfQueryRetriever (LangChain)
-    app.lc_llm = ChatOpenAI(
-        model="gpt-4o-mini",
-        temperature=0,
-        api_key=OPEN_AI_API
-    )
-
-    # --- Metadata schema & Self-Query configuration ---
-    # Make the description sharply aligned with your corpus.
-    # Your documents are short veterinary Q&A answers with:
-    # - `answer` (free text guidance),
-    # - `diseases` (one of a fixed set),
-    # - `keywords` (comma-separated important terms).
-    metadata_field_info = [
-        AttributeInfo(
-            name="diseases",
-            type="string",
-            description=(
-                "Primary condition category for the answer. One of: "
-                "Anxiety, Arthritis, Cancer, Chronic Disc Disease, Collapsed Trachea, Cushing's, "
-                "Degenerative Myelopathy, Diet and Food, Ear Infections, Gastric Disorders, "
-                "Kidney Disease, Liver Disease, Neurological, Heart Disease, Pancreatitis, "
-                "Skin Disorders, Ticks Fleas Heartworm, Vaccinations"
-            )
-        ),
-        AttributeInfo(
-            name="keywords",
-            type="string",
-            description=(
-                "Comma-separated key terms present in the Q&A (e.g., 'melanoma, biopsy, immunotherapy, turkey tail'). "
-                "Use for matching specific treatments, supplements, or clinical concepts."
-            )
-        ),
-    ]
-
-    # Be very explicit about what the document text represents so the self-query
-    # model writes precise filters and the right query text.
-    document_content_description = (
-        "Veterinary Q&A answer text for dogs/cats describing condition context, "
-        "recommended care, conventional and holistic options, cautions, and follow-up steps. "
-        "Each record includes: `answer` (free text), `diseases` (single category), "
-        "`keywords` (comma-separated terms)."
-    )
-
-    # Translate the structured query to Pinecone filters
-    translator = PineconeTranslator()
-
-    app.self_query_retriever = SelfQueryRetriever.from_llm(
-        llm=app.lc_llm,
-        vectorstore=app.vectorstore,
-        document_contents=document_content_description,
-        metadata_field_info=metadata_field_info,
-        structured_query_translator=translator,
-        enable_limit=True,
-        verbose=False,
-    )
+    # No initialization needed for dense retrieval only
+    pass
 
 
 # ---------- Dense Retrieval (manual) ----------
@@ -162,76 +87,15 @@ def dense_retrieve(query_text: str, top_k: int = 5) -> List[Dict[str, Any]]:
     return out
 
 
-# ---------- Self-Query Retrieval (LangChain) ----------
-
-async def self_query_retrieve_async(query_text: str, k: int = 5) -> List[Dict[str, Any]]:
-    """
-    Run the LangChain SelfQueryRetriever asynchronously and normalize docs.
-    """
-    # Make sure the retriever uses the caller's k
-    app.self_query_retriever.search_kwargs["k"] = k
-
-    # aget_relevant_documents returns List[Document]
-    docs = await app.self_query_retriever.aget_relevant_documents(query_text)
-
-    out = []
-    for d in docs:
-        md = d.metadata or {}
-        out.append({
-            "id": md.get("id") or md.get("doc_id") or md.get("uuid") or "",  # try common id fields; may be empty
-            "score": md.get("score"),  # LC may not surface a score; keep if present
-            "answer": md.get("answer") or d.page_content,  # fallback to content if needed
-            "diseases": md.get("diseases"),
-            "keywords": md.get("keywords"),
-            "source": "self_query"
-        })
-    return out
-
-
-# ---------- Parallel Orchestration ----------
+# ---------- Retrieval Orchestration ----------
 
 async def retrieve_parallel(query_text: str, top_k: int = 5) -> List[Dict[str, Any]]:
     """
-    Run dense (manual) and self-query (LC) in parallel, then merge and dedupe.
+    Run dense retrieval (renamed from retrieve_parallel for compatibility).
     """
-    # dense_retrieve is sync & blocking -> run in a thread
-    dense_task = asyncio.to_thread(dense_retrieve, query_text, top_k)
-    sq_task = self_query_retrieve_async(query_text, top_k)
-
-    dense_results, sq_results = await asyncio.gather(dense_task, sq_task)
-
-    # Merge + dedupe by (id, answer) fallback (sometimes id may be missing)
-    merged: Dict[str, Dict[str, Any]] = {}
-    def key_of(doc):
-        # Prefer stable id if present, else hash on answer text
-        return doc.get("id") or f"ans::{(doc.get('answer') or '')[:64]}"
-
-    for lst in (dense_results, sq_results):
-        for d in lst:
-            k = key_of(d)
-            if k not in merged:
-                merged[k] = d
-            else:
-                # Keep the best score if available, and merge sources
-                old = merged[k]
-                # pick higher score (if both present)
-                if (d.get("score") or -1) > (old.get("score") or -1):
-                    merged[k] = d
-                else:
-                    # append source tag
-                    old_src = set((old.get("source") or "").split("+")) if old.get("source") else set()
-                    new_src = set((d.get("source") or "").split("+")) if d.get("source") else set()
-                    old["source"] = "+".join(sorted(old_src.union(new_src))) if old_src or new_src else None
-
-    # Sort: score desc, then self_query first (often more precise filtering), then dense
-    def sort_key(doc):
-        src = doc.get("source") or ""
-        src_rank = 0 if "self_query" in src else 1
-        return (-1 * (doc.get("score") or 0), src_rank)
-
-    results = sorted(merged.values(), key=sort_key)
-    # Trim to a sensible combined top_k * 2 (you can change this)
-    return results[: max(top_k, 10)]
+    # Run dense_retrieve in a thread to keep it async-compatible
+    results = await asyncio.to_thread(dense_retrieve, query_text, top_k)
+    return results
 
 
 # ---------- Streaming LLM ----------
@@ -339,7 +203,7 @@ Avoid vague prompts like "monitor closely" or "follow up with your vet" unless D
 
     user_prompt = (
         f"User Question:\n{query_text}\n\n"
-        f"Relevant Context (top results from two retrievers):\n{context_text}\n\n"
+        f"Relevant Context (top results from dense search):\n{context_text}\n\n"
         f"Final Answer (cite context by bracket numbers like [1], [2] where relevant):"
     )
 
@@ -371,10 +235,10 @@ if __name__ == "__main__":
         "but stool is softer. What would you recommend while we wait 10–14 days?"
     )
 
-    # Run the two retrievers in parallel and merge results
+    # Run dense retrieval
     results = asyncio.run(retrieve_parallel(query, top_k=5))
 
-    print("\n--- Combined Retrieved Context (Self-Query + Dense) ---\n")
+    print("\n--- Retrieved Context (Dense Search) ---\n")
     for r in results:
         print(f"ID: {r.get('id')} | Score: {r.get('score')} | Source: {r.get('source')}")
         print(f"Diseases: {r.get('diseases')}")

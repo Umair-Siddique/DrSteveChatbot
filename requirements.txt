@@ -2,9 +2,3 @@ streamlit
 openai
 python-dotenv
 pinecone
-langchain_openai
-langchain
-langchain-core
-langchain-community
-langchain-pinecone
-lark

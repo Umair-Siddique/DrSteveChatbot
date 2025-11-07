@@ -150,7 +150,7 @@ if query := st.chat_input("Type your question for Dr. Steve..."):
         
         user_prompt = (
             f"User Question:\n{query}\n\n"
-            f"Relevant Context (top results from two retrievers):\n{context_text}\n\n"
+            f"Relevant Context (top results from dense search):\n{context_text}\n\n"
             f"Final Answer (cite context by bracket numbers like [1], [2] where relevant):"
         )
         
