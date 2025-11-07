@@ -17,10 +17,21 @@ from langchain_community.query_constructors.pinecone import PineconeTranslator
 
 # ---------- Env & Clients ----------
 
+# Load environment variables
 load_dotenv()
-OPEN_AI_API = os.getenv("OPEN_AI_API")
-PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
-PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME")
+
+# Helper function to get secrets from Streamlit or environment
+def get_secret(key: str) -> str:
+    """Get secret from Streamlit secrets or environment variables."""
+    try:
+        import streamlit as st
+        return st.secrets[key]
+    except (ImportError, KeyError, FileNotFoundError):
+        return os.getenv(key)
+
+OPEN_AI_API = get_secret("OPEN_AI_API")
+PINECONE_API_KEY = get_secret("PINECONE_API_KEY")
+PINECONE_INDEX_NAME = get_secret("PINECONE_INDEX_NAME")
 
 # Raw OpenAI client (embeddings + streaming chat)
 oa = OpenAIClient(api_key=OPEN_AI_API)

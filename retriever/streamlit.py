@@ -42,7 +42,14 @@ if query := st.chat_input("Type your question for Dr. Steve..."):
         from dotenv import load_dotenv
         
         load_dotenv()
-        oa = OpenAI(api_key=os.getenv("OPEN_AI_API"))
+        
+        # Get API key from Streamlit secrets or environment
+        try:
+            api_key = st.secrets["OPEN_AI_API"]
+        except (KeyError, FileNotFoundError):
+            api_key = os.getenv("OPEN_AI_API")
+        
+        oa = OpenAI(api_key=api_key)
         
         # Build context from retrieved documents
         context_chunks = []
