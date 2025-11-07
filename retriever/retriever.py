@@ -10,7 +10,7 @@ from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from pinecone import Pinecone
 from langchain_pinecone import PineconeVectorStore
 # Self-Query retriever bits
-from langchain.chains.query_constructor.base import AttributeInfo
+from langchain_core.structured_query import AttributeInfo
 from langchain.retrievers.self_query.base import SelfQueryRetriever
 from langchain_community.query_constructors.pinecone import PineconeTranslator
 
